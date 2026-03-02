@@ -8,6 +8,7 @@ from tensorflow.keras import optimizers
 from PIL import Image
 import io
 
+
 from config import IMG_SIZE, MODEL_PATH, LEARNING_RATE
 
 print("Завантаження моделі...")
