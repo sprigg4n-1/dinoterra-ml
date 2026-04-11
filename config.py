@@ -20,5 +20,6 @@ DINO_CLASSES_PATH = "models/stage2_dino_classes.json"
 # Шлях до збереженої моделі
 MODEL_PATH = "models/stage1_binary.keras"
 MODEL_PATH_DINO_CLASS = "models/stage2_dino_species.keras"
+MODEL_PATH_NON_DINO_CLASS = "models/stage2_non_dino_species.keras"
 
 

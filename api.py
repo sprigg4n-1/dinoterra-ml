@@ -8,8 +8,7 @@ from tensorflow.keras import optimizers
 from PIL import Image
 import io
 
-
-from config import IMG_SIZE, MODEL_PATH, LEARNING_RATE
+from config import IMG_SIZE, LEARNING_RATE, MODEL_PATH, MODEL_PATH_DINO_CLASS, MODEL_PATH_NON_DINO_CLASS,  DINO_CLASSES_PATH
 
 print("Завантаження моделі...")
 model = load_model(MODEL_PATH)
@@ -17,7 +16,6 @@ print("Модель завантажено!")
 
 app = FastAPI()
 
-# дозволяємо доступ з фронтенда
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
