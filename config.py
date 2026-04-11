@@ -15,5 +15,10 @@ NON_DINO_FOLDER = "dataset/not_dinosaur"
 NEW_DINO_FOLDER = "dataset/new_dino"
 NEW_NON_DINO_FOLDER = "dataset/new_non_dino"
 
+DINO_CLASSES_PATH = "models/stage2_dino_classes.json"
+
 # Шлях до збереженої моделі
-MODEL_PATH = "models/cnn_model_active.h5"
+MODEL_PATH = "models/stage1_binary.keras"
+MODEL_PATH_DINO_CLASS = "models/stage2_dino_species.keras"
+
+
