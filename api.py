@@ -1,4 +1,5 @@
 import os
+import subprocess
 import uvicorn
 import numpy as np
 import json
@@ -19,7 +20,6 @@ from config import (
     LEARNING_RATE,
     MODEL_PATH, MODEL_PATH_DINO_CLASS,
     DINO_CLASSES_PATH,
-    NEW_DINO_FOLDER,
     RETRAIN_THRESHOLD,
 )
 
@@ -33,7 +33,6 @@ print("Всі моделі завантажено!")
 with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
     dino_classes_raw = json.load(f)
 
-# Конвертуємо словник в список якщо потрібно
 if isinstance(dino_classes_raw, dict):
     dino_classes = [dino_classes_raw[str(i)] for i in range(len(dino_classes_raw))]
 else:
@@ -43,6 +42,7 @@ print(f"Завантажено класів: {len(dino_classes)}")
 
 # ── Лічильник для перенавчання ────────────────────────────────────────────────
 pending_retrain_count = 0
+is_retraining = False
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="DinoTerra ML API")
@@ -64,7 +64,7 @@ def prepare_image(image_bytes: bytes, size: tuple) -> np.ndarray:
     return np.expand_dims(img, axis=0)
 
 def prepare_image_stage2(image_bytes: bytes) -> np.ndarray:
-    """Для Stage 2 — ResNet50 preprocess_input як у notebook"""
+    """Для Stage 2 — ResNet50 preprocess_input"""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize(IMG_SIZE_BIG)
     img = np.array(image).astype("float32")
@@ -79,32 +79,16 @@ def prepare_image_resnet(image_bytes: bytes) -> np.ndarray:
     img = np.expand_dims(img, axis=0)
     return resnet_preprocess(img)
 
-def save_for_retrain(image_bytes: bytes, correct_class: str, prediction_id: str):
-    """Зберігає фото у папку для перенавчання"""
-    target_folder = os.path.join(NEW_DINO_FOLDER, correct_class)
-    os.makedirs(target_folder, exist_ok=True)
-    path = os.path.join(target_folder, f"{prediction_id}.jpg")
-    with open(path, "wb") as f:
-        f.write(image_bytes)
-
 # ── 1. USER PREDICT ───────────────────────────────────────────────────────────
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    """
-    Для користувача:
-      - Stage 1 (150x150, /255.0) → динозавр чи ні
-      - Stage 2 (224x224, resnet_preprocess) → топ-3 види
-    Фото НЕ зберігається — все в MongoDB на беці.
-    """
     try:
         image_bytes = await file.read()
 
-        # Stage 1 — бінарна
         img_s1 = prepare_image(image_bytes, IMG_SIZE)
         stage1_prob = float(model_binary.predict(img_s1, verbose=0)[0][0])
         is_dino = stage1_prob >= 0.5
 
-        # Stage 2 — топ-3
         if is_dino:
             img_s2 = prepare_image_stage2(image_bytes)
             stage2_preds = model_dino.predict(img_s2, verbose=0)[0]
@@ -146,68 +130,9 @@ async def predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 2. FEEDBACK ───────────────────────────────────────────────────────────────
-@app.post("/feedback")
-async def feedback(
-    file: UploadFile = File(...),
-    prediction_id: str = Form(...),
-    correct_class: str = Form(...),
-    error_type: str = Form(...),
-):
-    global pending_retrain_count
-
-    try:
-        image_bytes = await file.read()
-
-        if error_type == "WRONG_SPECIES":
-            # Stage 2 помилилась — зберігаємо для перенавчання Stage 2
-            if correct_class and correct_class in dino_classes:
-                save_for_retrain(image_bytes, correct_class, prediction_id)
-                pending_retrain_count += 1
-
-        elif error_type == "FALSE_NEGATIVE":
-            # Динозавр → не динозавр — зберігаємо для перенавчання Stage 1
-            if correct_class and correct_class in dino_classes:
-                save_for_retrain(image_bytes, correct_class, prediction_id)
-            else:
-                # Не знаємо вид але знаємо що динозавр
-                os.makedirs(NEW_DINO_FOLDER, exist_ok=True)
-                path = os.path.join(NEW_DINO_FOLDER, f"{prediction_id}.jpg")
-                with open(path, "wb") as f:
-                    f.write(image_bytes)
-            pending_retrain_count += 1
-
-        elif error_type == "FALSE_POSITIVE":
-            # Не динозавр → динозавр — зберігаємо для перенавчання Stage 1
-            not_dino_folder = "dataset/new_not_dino"
-            os.makedirs(not_dino_folder, exist_ok=True)
-            path = os.path.join(not_dino_folder, f"{prediction_id}.jpg")
-            with open(path, "wb") as f:
-                f.write(image_bytes)
-            pending_retrain_count += 1
-
-        return {
-            "status": "Збережено для перенавчання",
-            "error_type": error_type,
-            "correct_class": correct_class,
-            "pending_retrain_count": pending_retrain_count,
-            "should_retrain": pending_retrain_count >= RETRAIN_THRESHOLD,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"ПОМИЛКА /feedback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ── 3. ADMIN PREDICT ──────────────────────────────────────────────────────────
+# ── 2. ADMIN PREDICT ──────────────────────────────────────────────────────────
 @app.post("/admin/predict")
 async def admin_predict(file: UploadFile = File(...)):
-    """
-    Для адміна:
-      - Якщо динозавр → топ-1 вид
-      - Якщо не динозавр → що це за річ (топ-1)
-    """
     try:
         image_bytes = await file.read()
 
@@ -226,7 +151,6 @@ async def admin_predict(file: UploadFile = File(...)):
                 "species": dino_classes[class_idx],
                 "confidence": round(float(stage2_preds[class_idx]), 4),
             }
-
         else:
             img_resnet = prepare_image_resnet(image_bytes)
             preds = model_non_dino.predict(img_resnet, verbose=0)
@@ -244,13 +168,12 @@ async def admin_predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 4. TRAIN SINGLE (адмін) ───────────────────────────────────────────────────
+# ── 3. TRAIN SINGLE (адмін) ───────────────────────────────────────────────────
 @app.post("/train_single")
 async def train_single(
     file: UploadFile = File(...),
     correct_label: int = Form(...),
 ):
-    """Донавчає stage1 модель на одному прикладі"""
     try:
         image_bytes = await file.read()
         img = prepare_image(image_bytes, IMG_SIZE)
@@ -279,11 +202,16 @@ async def train_single(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── 5. RETRAIN TRIGGER (адмін) ────────────────────────────────────────────────
+# ── 4. RETRAIN TRIGGER (адмін) ────────────────────────────────────────────────
 @app.post("/retrain_trigger")
 async def retrain_trigger():
-    """Перевіряє чи є достатньо зразків для перенавчання"""
-    global pending_retrain_count
+    global pending_retrain_count, is_retraining
+
+    if is_retraining:
+        return {
+            "status": "Перенавчання вже запущено",
+            "pending_count": pending_retrain_count,
+        }
 
     if pending_retrain_count < 10:
         return {
@@ -292,23 +220,37 @@ async def retrain_trigger():
             "required": 10,
         }
 
+    # Запускаємо retrain.py у фоні
+    is_retraining = True
+    subprocess.Popen(["python", "retrain.py"])
+
     return {
-        "status": "Готово до перенавчання",
+        "status": "Перенавчання запущено",
         "pending_count": pending_retrain_count,
-        "message": "Запусти retrain.py для перенавчання моделі",
     }
 
 
-# ── 6. RETRAIN DONE ───────────────────────────────────────────────────────────
+# ── 5. RETRAIN DONE ───────────────────────────────────────────────────────────
 @app.post("/retrain_done")
 async def retrain_done():
-    """Викликається після успішного перенавчання — скидає лічильник"""
-    global pending_retrain_count
+    global pending_retrain_count, is_retraining
     pending_retrain_count = 0
+    is_retraining = False
 
     return {
-        "status": "Лічильник скинуто",
+        "status": "Перенавчання завершено",
         "pending_retrain_count": pending_retrain_count,
+    }
+
+
+# ── 6. RETRAIN STATUS ─────────────────────────────────────────────────────────
+@app.get("/retrain_status")
+async def retrain_status():
+    """Адмін може перевірити статус перенавчання"""
+    return {
+        "is_retraining": is_retraining,
+        "pending_count": pending_retrain_count,
+        "should_retrain": pending_retrain_count >= RETRAIN_THRESHOLD,
     }
 
 
