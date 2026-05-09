@@ -152,23 +152,43 @@ async def feedback(
     file: UploadFile = File(...),
     prediction_id: str = Form(...),
     correct_class: str = Form(...),
+    error_type: str = Form(...),
 ):
-    """
-    Отримує фото від Node.js (з MongoDB) і зберігає для перенавчання.
-    Викликається тільки коли модель помилилась і юзер вказав правильний клас.
-    """
     global pending_retrain_count
 
     try:
-        if correct_class not in dino_classes:
-            raise HTTPException(status_code=400, detail=f"Невідомий клас: {correct_class}")
-
         image_bytes = await file.read()
-        save_for_retrain(image_bytes, correct_class, prediction_id)
-        pending_retrain_count += 1
+
+        if error_type == "WRONG_SPECIES":
+            # Stage 2 помилилась — зберігаємо для перенавчання Stage 2
+            if correct_class and correct_class in dino_classes:
+                save_for_retrain(image_bytes, correct_class, prediction_id)
+                pending_retrain_count += 1
+
+        elif error_type == "FALSE_NEGATIVE":
+            # Динозавр → не динозавр — зберігаємо для перенавчання Stage 1
+            if correct_class and correct_class in dino_classes:
+                save_for_retrain(image_bytes, correct_class, prediction_id)
+            else:
+                # Не знаємо вид але знаємо що динозавр
+                os.makedirs(NEW_DINO_FOLDER, exist_ok=True)
+                path = os.path.join(NEW_DINO_FOLDER, f"{prediction_id}.jpg")
+                with open(path, "wb") as f:
+                    f.write(image_bytes)
+            pending_retrain_count += 1
+
+        elif error_type == "FALSE_POSITIVE":
+            # Не динозавр → динозавр — зберігаємо для перенавчання Stage 1
+            not_dino_folder = "dataset/new_not_dino"
+            os.makedirs(not_dino_folder, exist_ok=True)
+            path = os.path.join(not_dino_folder, f"{prediction_id}.jpg")
+            with open(path, "wb") as f:
+                f.write(image_bytes)
+            pending_retrain_count += 1
 
         return {
             "status": "Збережено для перенавчання",
+            "error_type": error_type,
             "correct_class": correct_class,
             "pending_retrain_count": pending_retrain_count,
             "should_retrain": pending_retrain_count >= RETRAIN_THRESHOLD,
@@ -179,7 +199,6 @@ async def feedback(
     except Exception as e:
         print(f"ПОМИЛКА /feedback: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ── 3. ADMIN PREDICT ──────────────────────────────────────────────────────────
 @app.post("/admin/predict")
