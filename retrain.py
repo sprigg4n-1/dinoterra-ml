@@ -27,6 +27,10 @@ TEMP_DINO_FOLDER     = "dataset/temp_retrain/dino"
 TEMP_BINARY_DINO     = "dataset/temp_retrain/binary/dinosaur"
 TEMP_BINARY_NON_DINO = "dataset/temp_retrain/binary/not_dinosaur"
 
+# ── Шляхи до нових моделей (hot-swap) ─────────────────────────────────────────
+MODEL_PATH_NEW      = "models/stage1_binary_new.keras"
+MODEL_PATH_DINO_NEW = "models/stage2_dino_species_new.keras"
+
 # ── Логування ──────────────────────────────────────────────────────────────────
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -134,6 +138,11 @@ def retrain_stage1():
         shuffle=True,
     )
 
+    if train_gen.samples == 0:
+        log("Немає зображень. Пропускаємо.")
+        shutil.rmtree(combined)
+        return None
+
     val_gen = datagen.flow_from_directory(
         combined,
         target_size=IMG_SIZE,
@@ -142,11 +151,6 @@ def retrain_stage1():
         subset="validation",
         shuffle=False,
     )
-
-    if train_gen.samples == 0:
-        log("Немає зображень. Пропускаємо.")
-        shutil.rmtree(combined)
-        return None
 
     log("Завантаження Stage 1 моделі...")
     model = load_model(MODEL_PATH)
@@ -178,7 +182,7 @@ def retrain_stage1():
 
     version = datetime.now().strftime("%Y%m%d_%H%M%S")
     model.save(f"models/stage1_binary_{version}.keras")
-    model.save(MODEL_PATH)
+    model.save(MODEL_PATH_NEW)  # ← hot-swap
 
     acc  = history.history["val_accuracy"][-1]
     loss = history.history["val_loss"][-1]
@@ -227,6 +231,11 @@ def retrain_stage2_dino():
         shuffle=True,
     )
 
+    if train_gen.samples == 0:
+        log("Немає зображень. Пропускаємо.")
+        shutil.rmtree(combined)
+        return None
+
     val_gen = datagen.flow_from_directory(
         combined,
         target_size=IMG_SIZE_BIG,
@@ -236,24 +245,17 @@ def retrain_stage2_dino():
         shuffle=False,
     )
 
-    if train_gen.samples == 0:
-        log("Немає зображень. Пропускаємо.")
-        shutil.rmtree(combined)
-        return None
-
     classes = list(train_gen.class_indices.keys())
     classes_dict = {str(i): name for i, name in enumerate(classes)}
 
     log("Завантаження Stage 2 моделі...")
     model = load_model(MODEL_PATH_DINO_CLASS)
 
-    # Перевіряємо чи змінилась кількість класів
     with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
         current_classes = json.load(f)
 
     current_count = len(current_classes)
     new_count = len(classes)
-
     new_class_names = []
 
     if new_count != current_count:
@@ -261,7 +263,6 @@ def retrain_stage2_dino():
         from tensorflow.keras.layers import Dense
         from tensorflow.keras import Model
 
-        # Знаходимо нові класи
         old_class_names = set(current_classes.values())
         new_class_names = [c for c in classes if c not in old_class_names]
         log(f"Нові класи: {new_class_names}")
@@ -300,9 +301,8 @@ def retrain_stage2_dino():
 
     version = datetime.now().strftime("%Y%m%d_%H%M%S")
     model.save(f"models/stage2_dino_species_{version}.keras")
-    model.save(MODEL_PATH_DINO_CLASS)
+    model.save(MODEL_PATH_DINO_NEW)  # ← hot-swap
 
-    # Зберігаємо оновлені класи після успішного навчання
     with open(DINO_CLASSES_PATH, "w", encoding="utf-8") as f:
         json.dump(classes_dict, f, ensure_ascii=False, indent=2)
     log(f"Класи оновлено: {classes}")
@@ -333,7 +333,6 @@ def main(retrain_id: str = None):
 
     if len(images) < RETRAIN_THRESHOLD:
         log(f"Недостатньо фото ({len(images)}/{RETRAIN_THRESHOLD}). Виходимо.")
-        # Повідомляємо що ретрен не відбувся
         if retrain_id:
             requests.post(
                 f"{NODE_API_URL}/api/v1/ml/admin/retrain/done",
@@ -350,22 +349,19 @@ def main(retrain_id: str = None):
     stage1_result = retrain_stage1()
     stage2_result = retrain_stage2_dino()
 
-    # Збираємо нові класи якщо були
     new_classes = stage2_result.get("new_classes", []) if stage2_result else []
 
-    # Видаляємо тимчасові папки
     if os.path.exists("dataset/temp_retrain"):
         shutil.rmtree("dataset/temp_retrain")
         log("Тимчасові папки видалено")
 
-    # Видаляємо фото з MongoDB
     try:
         response = requests.delete(f"{NODE_API_URL}/api/v1/ml/admin/retrain-images")
         log(f"Фото видалено з MongoDB: {response.json()}")
     except Exception as e:
         log(f"Помилка видалення фото з MongoDB: {e}")
 
-    # Повідомляємо Node.js що ретрен завершено з результатами
+    # Повідомляємо Node.js — він повідомить FastAPI через /retrain_done
     try:
         payload = {
             "retrainId": retrain_id,
@@ -382,6 +378,13 @@ def main(retrain_id: str = None):
         log(f"Node.js повідомлено: {response.json()}")
     except Exception as e:
         log(f"Помилка повідомлення Node.js: {e}")
+
+    # Hot-swap — повідомляємо FastAPI безпосередньо
+    try:
+        requests.post(f"{ML_API_URL}/retrain_done")
+        log("FastAPI повідомлено про hot-swap моделей")
+    except Exception as e:
+        log(f"Помилка повідомлення FastAPI: {e}")
 
     log("====== Перенавчання завершено ======")
 

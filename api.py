@@ -26,11 +26,15 @@ from config import (
 
 NODE_API_URL = "http://localhost:9000"
 
+# ── Шляхи до нових моделей (тимчасові під час ретрену) ───────────────────────
+MODEL_PATH_NEW         = "models/stage1_binary_new.keras"
+MODEL_PATH_DINO_NEW    = "models/stage2_dino_species_new.keras"
+
 # ── Завантаження моделей ──────────────────────────────────────────────────────
 print("Завантаження моделей...")
-model_binary   = load_model(MODEL_PATH)
-model_dino     = load_model(MODEL_PATH_DINO_CLASS)
-model_non_dino = ResNet50(weights="imagenet")
+active_model_binary = load_model(MODEL_PATH)
+active_model_dino   = load_model(MODEL_PATH_DINO_CLASS)
+model_non_dino      = ResNet50(weights="imagenet")
 print("Всі моделі завантажено!")
 
 with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
@@ -43,7 +47,7 @@ else:
 
 print(f"Завантажено класів: {len(dino_classes)}")
 
-# ── Лічильник для перенавчання ────────────────────────────────────────────────
+# ── Стан ретрену ──────────────────────────────────────────────────────────────
 pending_retrain_count = 0
 is_retraining = False
 
@@ -60,14 +64,12 @@ app.add_middleware(
 
 # ── Хелпери ───────────────────────────────────────────────────────────────────
 def prepare_image(image_bytes: bytes, size: tuple) -> np.ndarray:
-    """Для Stage 1 — бінарна модель (/255.0)"""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize(size)
     img = np.array(image).astype("float32") / 255.0
     return np.expand_dims(img, axis=0)
 
 def prepare_image_stage2(image_bytes: bytes) -> np.ndarray:
-    """Для Stage 2 — ResNet50 preprocess_input"""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize(IMG_SIZE_BIG)
     img = np.array(image).astype("float32")
@@ -75,12 +77,22 @@ def prepare_image_stage2(image_bytes: bytes) -> np.ndarray:
     return resnet_preprocess(img)
 
 def prepare_image_resnet(image_bytes: bytes) -> np.ndarray:
-    """Для non-dino ResNet50"""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize(IMG_SIZE_BIG)
     img = np.array(image).astype("float32")
     img = np.expand_dims(img, axis=0)
     return resnet_preprocess(img)
+
+def reload_dino_classes():
+    """Перезавантажує класи динозаврів після ретрену"""
+    global dino_classes
+    with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if isinstance(raw, dict):
+        dino_classes = [raw[str(i)] for i in range(len(raw))]
+    else:
+        dino_classes = raw
+    print(f"Класи оновлено: {len(dino_classes)}")
 
 # ── 1. USER PREDICT ───────────────────────────────────────────────────────────
 @app.post("/predict")
@@ -89,12 +101,12 @@ async def predict(file: UploadFile = File(...)):
         image_bytes = await file.read()
 
         img_s1 = prepare_image(image_bytes, IMG_SIZE)
-        stage1_prob = float(model_binary.predict(img_s1, verbose=0)[0][0])
+        stage1_prob = float(active_model_binary.predict(img_s1, verbose=0)[0][0])
         is_dino = stage1_prob >= 0.5
 
         if is_dino:
             img_s2 = prepare_image_stage2(image_bytes)
-            stage2_preds = model_dino.predict(img_s2, verbose=0)[0]
+            stage2_preds = active_model_dino.predict(img_s2, verbose=0)[0]
             top3_indices = np.argsort(stage2_preds)[::-1][:3]
             top3 = [
                 {
@@ -140,12 +152,12 @@ async def admin_predict(file: UploadFile = File(...)):
         image_bytes = await file.read()
 
         img_s1 = prepare_image(image_bytes, IMG_SIZE)
-        stage1_prob = float(model_binary.predict(img_s1, verbose=0)[0][0])
+        stage1_prob = float(active_model_binary.predict(img_s1, verbose=0)[0][0])
         is_dino = stage1_prob >= 0.5
 
         if is_dino:
             img_s2 = prepare_image_stage2(image_bytes)
-            stage2_preds = model_dino.predict(img_s2, verbose=0)[0]
+            stage2_preds = active_model_dino.predict(img_s2, verbose=0)[0]
             class_idx = int(np.argmax(stage2_preds))
 
             return {
@@ -182,17 +194,17 @@ async def train_single(
         img = prepare_image(image_bytes, IMG_SIZE)
         y = np.array([correct_label], dtype="float32")
 
-        for layer in model_binary.layers[:-3]:
+        for layer in active_model_binary.layers[:-3]:
             layer.trainable = False
 
-        model_binary.compile(
+        active_model_binary.compile(
             loss="binary_crossentropy",
             optimizer=optimizers.Adam(LEARNING_RATE * 0.25),
             metrics=["accuracy"]
         )
 
-        history = model_binary.fit(img, y, epochs=1, verbose=0)
-        model_binary.save(MODEL_PATH)
+        history = active_model_binary.fit(img, y, epochs=1, verbose=0)
+        active_model_binary.save(MODEL_PATH)
 
         return {
             "status": "Stage1 модель донавчено",
@@ -211,14 +223,11 @@ async def retrain_trigger(request: Request):
     global is_retraining
 
     if is_retraining:
-        return {
-            "status": "Перенавчання вже запущено",
-        }
+        return {"status": "Перенавчання вже запущено"}
 
     body = await request.json()
     retrain_id = body.get("retrainId", "")
 
-    # Питаємо Node.js скільки фото є
     try:
         response = requests.get(f"{NODE_API_URL}/api/v1/ml/admin/retrain-images")
         data = response.json()
@@ -244,23 +253,37 @@ async def retrain_trigger(request: Request):
     }
 
 
-# ── 5. RETRAIN DONE ───────────────────────────────────────────────────────────
+# ── 5. RETRAIN DONE — hot-swap моделей ───────────────────────────────────────
 @app.post("/retrain_done")
 async def retrain_done():
-    global pending_retrain_count, is_retraining
-    pending_retrain_count = 0
-    is_retraining = False
+    global active_model_binary, active_model_dino, is_retraining, pending_retrain_count
 
-    return {
-        "status": "Перенавчання завершено",
-        "pending_retrain_count": pending_retrain_count,
-    }
+    # Завантажуємо нову Stage 1 якщо є
+    if os.path.exists(MODEL_PATH_NEW):
+        print("Завантаження нової Stage 1 моделі...")
+        active_model_binary = load_model(MODEL_PATH_NEW)
+        os.replace(MODEL_PATH_NEW, MODEL_PATH)
+        print("Stage 1 модель оновлено!")
+
+    # Завантажуємо нову Stage 2 якщо є
+    if os.path.exists(MODEL_PATH_DINO_NEW):
+        print("Завантаження нової Stage 2 моделі...")
+        active_model_dino = load_model(MODEL_PATH_DINO_NEW)
+        os.replace(MODEL_PATH_DINO_NEW, MODEL_PATH_DINO_CLASS)
+        print("Stage 2 модель оновлено!")
+
+    # Оновлюємо класи якщо змінились
+    reload_dino_classes()
+
+    is_retraining = False
+    pending_retrain_count = 0
+
+    return {"status": "Перенавчання завершено, модель оновлено"}
 
 
 # ── 6. RETRAIN STATUS ─────────────────────────────────────────────────────────
 @app.get("/retrain_status")
 async def retrain_status():
-    """Адмін може перевірити статус перенавчання"""
     return {
         "is_retraining": is_retraining,
         "pending_count": pending_retrain_count,
