@@ -3,8 +3,9 @@ import subprocess
 import uvicorn
 import numpy as np
 import json
+import requests
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, Request, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input as resnet_preprocess, decode_predictions
@@ -22,6 +23,8 @@ from config import (
     DINO_CLASSES_PATH,
     RETRAIN_THRESHOLD,
 )
+
+NODE_API_URL = "http://localhost:9000"
 
 # ── Завантаження моделей ──────────────────────────────────────────────────────
 print("Завантаження моделей...")
@@ -204,29 +207,40 @@ async def train_single(
 
 # ── 4. RETRAIN TRIGGER (адмін) ────────────────────────────────────────────────
 @app.post("/retrain_trigger")
-async def retrain_trigger():
-    global pending_retrain_count, is_retraining
+async def retrain_trigger(request: Request):
+    global is_retraining
 
     if is_retraining:
         return {
             "status": "Перенавчання вже запущено",
-            "pending_count": pending_retrain_count,
         }
 
-    if pending_retrain_count < 10:
+    body = await request.json()
+    retrain_id = body.get("retrainId", "")
+
+    # Питаємо Node.js скільки фото є
+    try:
+        response = requests.get(f"{NODE_API_URL}/api/v1/ml/admin/retrain-images")
+        data = response.json()
+        images = data.get("data", [])
+        count = len(images)
+    except:
+        count = 0
+
+    if count < RETRAIN_THRESHOLD:
         return {
             "status": "Замало зразків",
-            "pending_count": pending_retrain_count,
-            "required": 10,
+            "pending_count": count,
+            "required": RETRAIN_THRESHOLD,
         }
 
-    # Запускаємо retrain.py у фоні
     is_retraining = True
-    subprocess.Popen(["python", "retrain.py"])
+    subprocess.Popen(["python", "retrain.py", retrain_id])
 
     return {
         "status": "Перенавчання запущено",
-        "pending_count": pending_retrain_count,
+        "pending_count": count,
+        "retrainId": retrain_id,
     }
 
 

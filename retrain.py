@@ -17,21 +17,22 @@ from config import (
     DINO_FOLDER,
     DINO_CLASSES_PATH,
     RETRAIN_THRESHOLD,
+    NON_DINO_FOLDER
 )
 
-NODE_API_URL = os.getenv("NODE_API_URL", "http://localhost:5000")
-ML_API_URL   = os.getenv("ML_API_URL",  "http://localhost:8000")
+NODE_API_URL = "http://localhost:9000"
+ML_API_URL   = "http://localhost:8000"
 
 TEMP_DINO_FOLDER     = "dataset/temp_retrain/dino"
 TEMP_BINARY_DINO     = "dataset/temp_retrain/binary/dinosaur"
 TEMP_BINARY_NON_DINO = "dataset/temp_retrain/binary/not_dinosaur"
 
-# ── Логування ─────────────────────────────────────────────────────────────────
+# ── Логування ──────────────────────────────────────────────────────────────────
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {msg}")
 
-# ── Отримати фото з MongoDB через Node.js API ─────────────────────────────────
+# ── Отримати фото з MongoDB через Node.js API ──────────────────────────────────
 def fetch_retrain_images() -> list:
     try:
         response = requests.get(f"{NODE_API_URL}/api/v1/ml/admin/retrain-images")
@@ -43,21 +44,17 @@ def fetch_retrain_images() -> list:
         log(f"Помилка отримання фото: {e}")
         return []
 
-# ── Зберегти фото тимчасово на диск ──────────────────────────────────────────
+# ── Зберегти фото тимчасово на диск ───────────────────────────────────────────
 def save_temp_images(images: list):
-    """
-    Розкладає фото по папках залежно від errorType і correctClass
-    """
     os.makedirs(TEMP_BINARY_DINO, exist_ok=True)
     os.makedirs(TEMP_BINARY_NON_DINO, exist_ok=True)
 
     for img_data in images:
-        file_b64  = img_data.get("file", "")
-        mime_type = img_data.get("mimeType", "image/jpeg")
+        file_b64      = img_data.get("file", "")
+        mime_type     = img_data.get("mimeType", "image/jpeg")
         error_type    = img_data.get("errorType")
         correct_class = img_data.get("correctClass")
 
-        # Прибираємо префікс data:image/...;base64,
         if "," in file_b64:
             file_b64 = file_b64.split(",")[1]
 
@@ -65,18 +62,15 @@ def save_temp_images(images: list):
         filename = f"{img_data.get('_id', 'img')}.jpg"
 
         if error_type == "FALSE_POSITIVE":
-            # Не динозавр → зберігаємо в binary/not_dinosaur
             path = os.path.join(TEMP_BINARY_NON_DINO, filename)
             with open(path, "wb") as f:
                 f.write(image_bytes)
 
         elif error_type in ("FALSE_NEGATIVE", "WRONG_SPECIES", "NEW_SPECIES"):
-            # Динозавр → зберігаємо в binary/dinosaur
             path = os.path.join(TEMP_BINARY_DINO, filename)
             with open(path, "wb") as f:
                 f.write(image_bytes)
 
-            # Якщо знаємо вид → зберігаємо в папку виду для Stage 2
             if correct_class:
                 species_folder = os.path.join(TEMP_DINO_FOLDER, correct_class)
                 os.makedirs(species_folder, exist_ok=True)
@@ -84,9 +78,9 @@ def save_temp_images(images: list):
                 with open(path2, "wb") as f:
                     f.write(image_bytes)
 
-    log(f"Тимчасово збережено фото для перенавчання")
+    log("Тимчасово збережено фото для перенавчання")
 
-# ── Копіювання зображень ──────────────────────────────────────────────────────
+# ── Копіювання зображень ───────────────────────────────────────────────────────
 def copy_images(src: str, dest: str, recursive: bool = False):
     if not os.path.exists(src):
         return
@@ -105,7 +99,7 @@ def copy_images(src: str, dest: str, recursive: bool = False):
             if fname.lower().endswith((".jpg", ".jpeg", ".png")):
                 shutil.copy2(os.path.join(src, fname), os.path.join(dest, fname))
 
-# ── Перенавчання Stage 1 (бінарна) ───────────────────────────────────────────
+# ── Перенавчання Stage 1 (бінарна) ────────────────────────────────────────────
 def retrain_stage1():
     log("=== Перенавчання Stage 1 (бінарна класифікація) ===")
 
@@ -116,11 +110,8 @@ def retrain_stage1():
     os.makedirs(dino_dest, exist_ok=True)
     os.makedirs(non_dino_dest, exist_ok=True)
 
-    # Старі дані
-    copy_images(DINO_FOLDER, dino_dest)
-    copy_images("dataset/not_dinosaur", non_dino_dest)
-
-    # Нові дані з MongoDB
+    copy_images(DINO_FOLDER, dino_dest, recursive=True)
+    copy_images(NON_DINO_FOLDER, non_dino_dest, recursive=True)
     copy_images(TEMP_BINARY_DINO, dino_dest)
     copy_images(TEMP_BINARY_NON_DINO, non_dino_dest)
 
@@ -194,10 +185,18 @@ def retrain_stage1():
     log(f"Stage 1 готово. Val accuracy: {acc:.4f} | Val loss: {loss:.4f}")
 
     shutil.rmtree(combined)
-    return acc, loss
 
+    return {
+        "val_accuracy": round(acc, 4),
+        "val_loss": round(loss, 4),
+        "epochs": len(history.history["val_accuracy"]),
+        "history_accuracy":     [round(x, 4) for x in history.history["accuracy"]],
+        "history_val_accuracy": [round(x, 4) for x in history.history["val_accuracy"]],
+        "history_loss":         [round(x, 4) for x in history.history["loss"]],
+        "history_val_loss":     [round(x, 4) for x in history.history["val_loss"]],
+    }
 
-# ── Перенавчання Stage 2 (вид динозавра) ─────────────────────────────────────
+# ── Перенавчання Stage 2 (вид динозавра) ──────────────────────────────────────
 def retrain_stage2_dino():
     log("=== Перенавчання Stage 2 (класифікація виду динозавра) ===")
 
@@ -206,7 +205,7 @@ def retrain_stage2_dino():
         return None
 
     combined = "dataset/dino_combined"
-    copy_images(DINO_FOLDER, combined)
+    copy_images(DINO_FOLDER, combined, recursive=True)
     copy_images(TEMP_DINO_FOLDER, combined, recursive=True)
 
     datagen = ImageDataGenerator(
@@ -242,15 +241,37 @@ def retrain_stage2_dino():
         shutil.rmtree(combined)
         return None
 
-    # Зберігаємо оновлені класи
     classes = list(train_gen.class_indices.keys())
     classes_dict = {str(i): name for i, name in enumerate(classes)}
-    with open(DINO_CLASSES_PATH, "w", encoding="utf-8") as f:
-        json.dump(classes_dict, f, ensure_ascii=False, indent=2)
-    log(f"Класи оновлено: {classes}")
 
     log("Завантаження Stage 2 моделі...")
     model = load_model(MODEL_PATH_DINO_CLASS)
+
+    # Перевіряємо чи змінилась кількість класів
+    with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
+        current_classes = json.load(f)
+
+    current_count = len(current_classes)
+    new_count = len(classes)
+
+    new_class_names = []
+
+    if new_count != current_count:
+        log(f"Кількість класів змінилась: {current_count} → {new_count}. Перебудовуємо вихідний шар...")
+        from tensorflow.keras.layers import Dense
+        from tensorflow.keras import Model
+
+        # Знаходимо нові класи
+        old_class_names = set(current_classes.values())
+        new_class_names = [c for c in classes if c not in old_class_names]
+        log(f"Нові класи: {new_class_names}")
+
+        base_output = model.layers[-2].output
+        new_output = Dense(new_count, activation="softmax", name="new_predictions")(base_output)
+        model = Model(inputs=model.input, outputs=new_output)
+        log(f"Архітектура оновлена: {current_count} → {new_count} класів")
+    else:
+        log(f"Кількість класів не змінилась ({current_count}). Продовжуємо fine-tuning.")
 
     for layer in model.layers[:-5]:
         layer.trainable = False
@@ -281,41 +302,56 @@ def retrain_stage2_dino():
     model.save(f"models/stage2_dino_species_{version}.keras")
     model.save(MODEL_PATH_DINO_CLASS)
 
+    # Зберігаємо оновлені класи після успішного навчання
+    with open(DINO_CLASSES_PATH, "w", encoding="utf-8") as f:
+        json.dump(classes_dict, f, ensure_ascii=False, indent=2)
+    log(f"Класи оновлено: {classes}")
+
     acc  = history.history["val_accuracy"][-1]
     loss = history.history["val_loss"][-1]
     log(f"Stage 2 готово. Val accuracy: {acc:.4f} | Val loss: {loss:.4f}")
 
     shutil.rmtree(combined)
-    return acc, loss
 
+    return {
+        "val_accuracy": round(acc, 4),
+        "val_loss": round(loss, 4),
+        "epochs": len(history.history["val_accuracy"]),
+        "history_accuracy":     [round(x, 4) for x in history.history["accuracy"]],
+        "history_val_accuracy": [round(x, 4) for x in history.history["val_accuracy"]],
+        "history_loss":         [round(x, 4) for x in history.history["loss"]],
+        "history_val_loss":     [round(x, 4) for x in history.history["val_loss"]],
+        "new_classes": new_class_names,
+    }
 
-# ── Головна функція ───────────────────────────────────────────────────────────
-def main():
+# ── Головна функція ────────────────────────────────────────────────────────────
+def main(retrain_id: str = None):
     log("====== Запуск перенавчання DinoTerra ======")
 
-    # Отримуємо фото з MongoDB
     images = fetch_retrain_images()
     log(f"Отримано фото для перенавчання: {len(images)}")
 
     if len(images) < RETRAIN_THRESHOLD:
         log(f"Недостатньо фото ({len(images)}/{RETRAIN_THRESHOLD}). Виходимо.")
-        requests.post(f"{ML_API_URL}/retrain_done")
+        # Повідомляємо що ретрен не відбувся
+        if retrain_id:
+            requests.post(
+                f"{NODE_API_URL}/api/v1/ml/admin/retrain/done",
+                json={
+                    "retrainId": retrain_id,
+                    "status": "FAILED",
+                    "imagesUsed": len(images),
+                }
+            )
         return
 
-    # Зберігаємо тимчасово на диск
     save_temp_images(images)
 
-    results = {}
+    stage1_result = retrain_stage1()
+    stage2_result = retrain_stage2_dino()
 
-    result = retrain_stage1()
-    if result:
-        acc, loss = result
-        results["stage1"] = {"val_accuracy": round(acc, 4), "val_loss": round(loss, 4)}
-
-    result = retrain_stage2_dino()
-    if result:
-        acc, loss = result
-        results["stage2_dino"] = {"val_accuracy": round(acc, 4), "val_loss": round(loss, 4)}
+    # Збираємо нові класи якщо були
+    new_classes = stage2_result.get("new_classes", []) if stage2_result else []
 
     # Видаляємо тимчасові папки
     if os.path.exists("dataset/temp_retrain"):
@@ -329,16 +365,28 @@ def main():
     except Exception as e:
         log(f"Помилка видалення фото з MongoDB: {e}")
 
-    # Повідомляємо ML API що перенавчання завершено
+    # Повідомляємо Node.js що ретрен завершено з результатами
     try:
-        requests.post(f"{ML_API_URL}/retrain_done")
-        log("ML API повідомлено про завершення")
+        payload = {
+            "retrainId": retrain_id,
+            "imagesUsed": len(images),
+            "newClasses": new_classes,
+            "status": "DONE",
+            "stage1": stage1_result,
+            "stage2": stage2_result,
+        }
+        response = requests.post(
+            f"{NODE_API_URL}/api/v1/ml/admin/retrain/done",
+            json=payload,
+        )
+        log(f"Node.js повідомлено: {response.json()}")
     except Exception as e:
-        log(f"Помилка повідомлення ML API: {e}")
+        log(f"Помилка повідомлення Node.js: {e}")
 
     log("====== Перенавчання завершено ======")
-    log(f"Результати: {json.dumps(results, indent=2, ensure_ascii=False)}")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    retrain_id = sys.argv[1] if len(sys.argv) > 1 else None
+    main(retrain_id)

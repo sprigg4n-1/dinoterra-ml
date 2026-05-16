@@ -29,5 +29,5 @@ DINO_CLASSES_PATH       = "models/stage2_dino_classes.json"
 NON_DINO_CLASSES_PATH   = "models/stage2_non_dino_classes.json"
 
 # ── Налаштування перенавчання ─────────────────────────────────────────────────
-RETRAIN_THRESHOLD = 50     
+RETRAIN_THRESHOLD = 2     
 STATS_PATH        = "models/stats.json"
