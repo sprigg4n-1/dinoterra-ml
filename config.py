@@ -29,5 +29,11 @@ DINO_CLASSES_PATH       = "models/stage2_dino_classes.json"
 NON_DINO_CLASSES_PATH   = "models/stage2_non_dino_classes.json"
 
 # ── Налаштування перенавчання ─────────────────────────────────────────────────
-RETRAIN_THRESHOLD = 2     
+RETRAIN_THRESHOLD = 10
 STATS_PATH        = "models/stats.json"
+
+# Кількість останніх шарів (не BatchNorm) які тренуються при fine-tuning.
+# Решта шарів заморожена — модель не "забуває" те, що вже знає.
+# Stage 1 (бінарна): зазвичай достатньо 5–10
+# Stage 2 (класифікація виду): 10–20 якщо додаються нові класи
+FINE_TUNE_LAYERS = 10
