@@ -17,12 +17,17 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from config import (
     IMG_SIZE, IMG_SIZE_BIG,
     BATCH_SIZE, EPOCHS, LEARNING_RATE,
+    BASE_MODEL_PATH, BASE_MODEL_PATH_DINO_CLASS, BASE_DINO_CLASSES_PATH,
     MODEL_PATH, MODEL_PATH_DINO_CLASS,
     DINO_FOLDER, NON_DINO_FOLDER,
     DINO_CLASSES_PATH,
     RETRAIN_THRESHOLD,
     FINE_TUNE_LAYERS,
 )
+
+def _resolve(runtime_path: str, base_path: str) -> str:
+    """Повертає runtime-модель якщо вже є перенавчена, інакше базову."""
+    return runtime_path if os.path.exists(runtime_path) else base_path
 
 NODE_API_URL = "http://localhost:9000"
 ML_API_URL   = "http://localhost:8000"
@@ -231,7 +236,8 @@ def retrain_stage1():
     clean_broken_images(combined)
 
     # ── Завантажуємо модель ДО генераторів, щоб визначити порядок класів ──────
-    load_from = MODEL_PATH_NEW if os.path.exists(MODEL_PATH_NEW) else MODEL_PATH
+    load_from = (MODEL_PATH_NEW if os.path.exists(MODEL_PATH_NEW)
+                 else _resolve(MODEL_PATH, BASE_MODEL_PATH))
     log(f"Завантаження Stage 1 моделі: {load_from}")
     log(f"Розмір файлу: {os.path.getsize(load_from) / 1024 / 1024:.1f} MB")
     model = load_model(load_from)
@@ -407,12 +413,13 @@ def retrain_stage2_dino():
     classes_dict = {str(i): name for i, name in enumerate(classes)}
     log(f"Класів для навчання: {len(classes)}")
 
-    load_from = MODEL_PATH_DINO_NEW if os.path.exists(MODEL_PATH_DINO_NEW) else MODEL_PATH_DINO_CLASS
+    load_from = (MODEL_PATH_DINO_NEW if os.path.exists(MODEL_PATH_DINO_NEW)
+                 else _resolve(MODEL_PATH_DINO_CLASS, BASE_MODEL_PATH_DINO_CLASS))
     log(f"Завантаження Stage 2 моделі: {load_from}")
     log(f"Розмір файлу: {os.path.getsize(load_from) / 1024 / 1024:.1f} MB")
     model = load_model(load_from)
 
-    with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
+    with open(_resolve(DINO_CLASSES_PATH, BASE_DINO_CLASSES_PATH), "r", encoding="utf-8") as f:
         current_classes = json.load(f)
 
     known_class_names = set(current_classes.values())

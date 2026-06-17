@@ -19,7 +19,12 @@ NEW_NON_DINO_FOLDER = "dataset/new_non_dino"
 PENDING_FOLDER      = "dataset/pending"        
 CONFIRMED_FOLDER    = "dataset/confirmed"      
 
-# ── Шляхи до моделей ─────────────────────────────────────────────────────────
+# ── Базові моделі (користувач кладе сюди готові, ніколи не перезаписуються) ──
+BASE_MODEL_PATH           = "base/stage1_binary.keras"
+BASE_MODEL_PATH_DINO_CLASS = "base/stage2_dino_species.keras"
+BASE_DINO_CLASSES_PATH    = "base/stage2_dino_classes.json"
+
+# ── Runtime-моделі (перезаписуються після кожного ретрену) ────────────────────
 MODEL_PATH              = "models/stage1_binary.keras"
 MODEL_PATH_DINO_CLASS   = "models/stage2_dino_species.keras"
 MODEL_PATH_NON_DINO_CLASS = "models/stage2_non_dino_species.keras"

@@ -19,10 +19,15 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 from config import (
     IMG_SIZE, IMG_SIZE_BIG,
     LEARNING_RATE,
+    BASE_MODEL_PATH, BASE_MODEL_PATH_DINO_CLASS, BASE_DINO_CLASSES_PATH,
     MODEL_PATH, MODEL_PATH_DINO_CLASS,
     DINO_CLASSES_PATH,
     RETRAIN_THRESHOLD,
 )
+
+def _resolve(runtime_path: str, base_path: str) -> str:
+    """Повертає runtime-модель якщо вже є перенавчена, інакше базову."""
+    return runtime_path if os.path.exists(runtime_path) else base_path
 
 NODE_API_URL = "http://localhost:9000"
 
@@ -32,12 +37,12 @@ MODEL_PATH_DINO_NEW    = "models/stage2_dino_species_new.keras"
 
 # ── Завантаження моделей ──────────────────────────────────────────────────────
 print("Завантаження моделей...")
-active_model_binary = load_model(MODEL_PATH)
-active_model_dino   = load_model(MODEL_PATH_DINO_CLASS)
+active_model_binary = load_model(_resolve(MODEL_PATH, BASE_MODEL_PATH))
+active_model_dino   = load_model(_resolve(MODEL_PATH_DINO_CLASS, BASE_MODEL_PATH_DINO_CLASS))
 model_non_dino      = ResNet50(weights="imagenet")
 print("Всі моделі завантажено!")
 
-with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
+with open(_resolve(DINO_CLASSES_PATH, BASE_DINO_CLASSES_PATH), "r", encoding="utf-8") as f:
     dino_classes_raw = json.load(f)
 
 if isinstance(dino_classes_raw, dict):
@@ -86,7 +91,7 @@ def prepare_image_resnet(image_bytes: bytes) -> np.ndarray:
 def reload_dino_classes():
     """Перезавантажує класи динозаврів після ретрену"""
     global dino_classes
-    with open(DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
+    with open(_resolve(DINO_CLASSES_PATH, BASE_DINO_CLASSES_PATH), "r", encoding="utf-8") as f:
         raw = json.load(f)
     if isinstance(raw, dict):
         dino_classes = [raw[str(i)] for i in range(len(raw))]
