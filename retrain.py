@@ -10,12 +10,14 @@ from PIL import Image as PILImage
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.image import ImageDataGenerator, load_img, img_to_array
 from tensorflow.keras.applications.resnet50 import preprocess_input as resnet_preprocess
+from tensorflow.keras.applications.efficientnet import preprocess_input as efficientnet_preprocess
+from tensorflow.keras.applications.efficientnet_v2 import preprocess_input as efficientnetv2_preprocess
 from tensorflow.keras import optimizers
 from tensorflow.keras.layers import BatchNormalization
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 from config import (
-    IMG_SIZE, IMG_SIZE_BIG,
+    IMG_SIZE, IMG_SIZE_BIG, IMG_SIZE_STAGE2,
     BATCH_SIZE, EPOCHS, LEARNING_RATE,
     BASE_MODEL_PATH, BASE_MODEL_PATH_DINO_CLASS, BASE_DINO_CLASSES_PATH,
     MODEL_PATH, MODEL_PATH_DINO_CLASS,
@@ -105,8 +107,7 @@ def detect_class_order(model) -> list:
             if fname.lower().endswith((".jpg", ".jpeg", ".png")):
                 try:
                     img = load_img(os.path.join(root, fname), target_size=IMG_SIZE)
-                    arr = img_to_array(img) / 255.0
-                    arr = np.expand_dims(arr, axis=0)
+                    arr = efficientnet_preprocess(np.expand_dims(img_to_array(img), axis=0))
                     score = float(model.predict(arr, verbose=0)[0][0])
                     scores.append(score)
                     count += 1
@@ -248,7 +249,7 @@ def retrain_stage1():
     class_order = detect_class_order(model)
 
     datagen = ImageDataGenerator(
-        rescale=1.0 / 255,
+        preprocessing_function=efficientnet_preprocess,
         rotation_range=20,
         width_shift_range=0.2,
         height_shift_range=0.2,
@@ -377,7 +378,7 @@ def retrain_stage2_dino():
     clean_broken_images(combined)
 
     datagen = ImageDataGenerator(
-        preprocessing_function=resnet_preprocess,
+        preprocessing_function=efficientnetv2_preprocess,
         rotation_range=20,
         width_shift_range=0.2,
         height_shift_range=0.2,
@@ -388,7 +389,7 @@ def retrain_stage2_dino():
 
     train_gen = datagen.flow_from_directory(
         combined,
-        target_size=IMG_SIZE_BIG,
+        target_size=IMG_SIZE_STAGE2,
         batch_size=BATCH_SIZE,
         class_mode="categorical",
         subset="training",
@@ -402,7 +403,7 @@ def retrain_stage2_dino():
 
     val_gen = datagen.flow_from_directory(
         combined,
-        target_size=IMG_SIZE_BIG,
+        target_size=IMG_SIZE_STAGE2,
         batch_size=BATCH_SIZE,
         class_mode="categorical",
         subset="validation",
@@ -419,7 +420,7 @@ def retrain_stage2_dino():
     log(f"Розмір файлу: {os.path.getsize(load_from) / 1024 / 1024:.1f} MB")
     model = load_model(load_from)
 
-    with open(_resolve(DINO_CLASSES_PATH, BASE_DINO_CLASSES_PATH), "r", encoding="utf-8") as f:
+    with open(BASE_DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
         current_classes = json.load(f)
 
     known_class_names = set(current_classes.values())
@@ -430,13 +431,19 @@ def retrain_stage2_dino():
     log(f"Поточна модель: {current_count} класів | Новий датасет: {new_count} класів")
 
     if new_count != current_count:
-        from tensorflow.keras.layers import Dense
+        from tensorflow.keras.layers import Dense, BatchNormalization, Dropout
         from tensorflow.keras import Model
-        log(f"Нові класи: {new_class_names}. Перебудовуємо вихідний шар ({current_count} → {new_count})...")
-        base_output = model.layers[-2].output
-        new_output = Dense(new_count, activation="softmax", name="new_predictions")(base_output)
+        log(f"Нові класи: {new_class_names}. Перебудовуємо голову ({current_count} → {new_count})...")
+        # EfficientNetV2S: layers[-2]=GAP, layers[-1]=head_model (вкладена підмодель)
+        gap_output = model.layers[-2].output
+        x = BatchNormalization()(gap_output)
+        x = Dense(1024, activation="relu")(x)
+        x = Dropout(0.5)(x)
+        x = Dense(512, activation="relu")(x)
+        x = Dropout(0.3)(x)
+        new_output = Dense(new_count, activation="softmax", name="new_predictions")(x)
         model = Model(inputs=model.input, outputs=new_output)
-        log(f"Архітектура оновлена: {current_count} → {new_count} класів")
+        log(f"Голову перебудовано: {current_count} → {new_count} класів")
     else:
         log(f"Fine-tuning існуючої моделі ({current_count} класів)")
 

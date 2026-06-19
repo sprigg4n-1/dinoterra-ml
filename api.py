@@ -9,6 +9,8 @@ from fastapi import FastAPI, UploadFile, Request, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input as resnet_preprocess, decode_predictions
+from tensorflow.keras.applications.efficientnet import preprocess_input as efficientnet_preprocess
+from tensorflow.keras.applications.efficientnet_v2 import preprocess_input as efficientnetv2_preprocess
 from tensorflow.keras import optimizers
 from PIL import Image
 import io
@@ -17,7 +19,7 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 from config import (
-    IMG_SIZE, IMG_SIZE_BIG,
+    IMG_SIZE, IMG_SIZE_BIG, IMG_SIZE_STAGE2,
     LEARNING_RATE,
     BASE_MODEL_PATH, BASE_MODEL_PATH_DINO_CLASS, BASE_DINO_CLASSES_PATH,
     MODEL_PATH, MODEL_PATH_DINO_CLASS,
@@ -37,12 +39,12 @@ MODEL_PATH_DINO_NEW    = "models/stage2_dino_species_new.keras"
 
 # ── Завантаження моделей ──────────────────────────────────────────────────────
 print("Завантаження моделей...")
-active_model_binary = load_model(_resolve(MODEL_PATH, BASE_MODEL_PATH))
-active_model_dino   = load_model(_resolve(MODEL_PATH_DINO_CLASS, BASE_MODEL_PATH_DINO_CLASS))
+active_model_binary = load_model(BASE_MODEL_PATH)
+active_model_dino   = load_model(BASE_MODEL_PATH_DINO_CLASS)
 model_non_dino      = ResNet50(weights="imagenet")
 print("Всі моделі завантажено!")
 
-with open(_resolve(DINO_CLASSES_PATH, BASE_DINO_CLASSES_PATH), "r", encoding="utf-8") as f:
+with open(BASE_DINO_CLASSES_PATH, "r", encoding="utf-8") as f:
     dino_classes_raw = json.load(f)
 
 if isinstance(dino_classes_raw, dict):
@@ -71,15 +73,15 @@ app.add_middleware(
 def prepare_image(image_bytes: bytes, size: tuple) -> np.ndarray:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize(size)
-    img = np.array(image).astype("float32") / 255.0
-    return np.expand_dims(img, axis=0)
+    img = np.array(image).astype("float32")
+    return efficientnet_preprocess(np.expand_dims(img, axis=0))
 
 def prepare_image_stage2(image_bytes: bytes) -> np.ndarray:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    image = image.resize(IMG_SIZE_BIG)
+    image = image.resize(IMG_SIZE_STAGE2)
     img = np.array(image).astype("float32")
     img = np.expand_dims(img, axis=0)
-    return resnet_preprocess(img)
+    return efficientnetv2_preprocess(img)
 
 def prepare_image_resnet(image_bytes: bytes) -> np.ndarray:
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")

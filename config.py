@@ -1,6 +1,7 @@
 # ── Розміри зображень ─────────────────────────────────────────────────────────
-IMG_SIZE = (150, 150)       
-IMG_SIZE_BIG = (224, 224)  
+IMG_SIZE = (224, 224)         # Stage 1 (EfficientNetB0)
+IMG_SIZE_BIG = (224, 224)    # ResNet50 (не-динозавр)
+IMG_SIZE_STAGE2 = (300, 300) # Stage 2 — EfficientNetV2S
 
 # ── Параметри навчання ────────────────────────────────────────────────────────
 BATCH_SIZE = 64
@@ -20,7 +21,7 @@ PENDING_FOLDER      = "dataset/pending"
 CONFIRMED_FOLDER    = "dataset/confirmed"      
 
 # ── Базові моделі (користувач кладе сюди готові, ніколи не перезаписуються) ──
-BASE_MODEL_PATH           = "base/stage1_binary.keras"
+BASE_MODEL_PATH           = "base/stage1_efficientnetb0.keras"
 BASE_MODEL_PATH_DINO_CLASS = "base/stage2_dino_species.keras"
 BASE_DINO_CLASSES_PATH    = "base/stage2_dino_classes.json"
 
